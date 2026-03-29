@@ -3,63 +3,83 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-# 1. Dosya Yolu
+# --- 1. AYARLAR VE DOSYA YOLU ---
 image_path = "data/BCCD_Dataset-master/BCCD/JPEGImages/BloodImage_00000.jpg"
 
 if not os.path.exists(image_path):
-    print("Resim bulunamadi!")
+    print(f"HATA: {image_path} bulunamadı!")
 else:
-    # 2. Resmi Oku
     img_bgr = cv2.imread(image_path)
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-    # 3. Ön İşleme (Gürültü Silme)
-    blurred = cv2.medianBlur(img_bgr, 5)
-
-    # 4. HSV Renk Uzayı ve Mor Filtre
-    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
-    lower_purple = np.array([120, 40, 40]) 
-    upper_purple = np.array([170, 255, 255])
-    mask_wbc = cv2.inRange(hsv, lower_purple, upper_purple)
-
-    # 5. Gürültü Temizleme (Küçük noktaları sil)
-    kernel = np.ones((5,5), np.uint8)
-    cleaned_mask = cv2.morphologyEx(mask_wbc, cv2.MORPH_OPEN, kernel)
-
-    # 6. Konturları Bul ve Çiz
-    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    output_img = img_rgb.copy()
-    wbc_count = 0
+    # --- 2. GÖRÜNTÜ İYİLEŞTİRME (Kritik Adım) ---
+    # Kontrastı artırmak için CLAHE uyguluyoruz
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl,a,b))
+    enhanced_bgr = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    blurred = cv2.medianBlur(enhanced_bgr, 5)
 
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 1000: # Sadece büyük olanları (akyuvar) say
+    # --- 3. AKYUVAR (WBC) TESPİTİ ---
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+    lower_purple = np.array([120, 30, 30]) # Aralığı biraz daha genişlettik
+    upper_purple = np.array([175, 255, 255])
+    mask_wbc = cv2.inRange(hsv, lower_purple, upper_purple)
+    cleaned_wbc = cv2.morphologyEx(mask_wbc, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+    wbc_contours, _ = cv2.findContours(cleaned_wbc, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    final_output = img_rgb.copy()
+    wbc_count = 0
+    for cnt in wbc_contours:
+        if cv2.contourArea(cnt) > 800:
             wbc_count += 1
             x, y, w, h = cv2.boundingRect(cnt)
-            cv2.rectangle(output_img, (x, y), (x + w, y + h), (0, 255, 0), 4)
-            cv2.putText(output_img, f"WBC #{wbc_count}", (x, y - 15), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            cv2.rectangle(final_output, (x, y), (x + w, y + h), (0, 255, 0), 4)
+            cv2.putText(final_output, "WBC", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-    # 7. TÜM SONUÇLARI TEK EKRANDA GÖSTER
-    plt.figure(figsize=(18, 6))
+    # --- 4. ALYUVAR (RBC) TESPİTİ (Watershed Agresif Ayar) ---
+    gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+    # Eşiklemeyi daha hassas yapıyoruz
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    
+    kernel = np.ones((3,3), np.uint8)
+    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    sure_bg = cv2.dilate(opening, kernel, iterations=2)
 
-    plt.subplot(1, 3, 1)
-    plt.imshow(img_rgb)
-    plt.title("1. Orijinal Goruntu")
+    dist_transform = cv2.distanceTransform(opening, cv2.DIST_L2, 5)
+    # Eşiği 0.1'e kadar çektik. Bu en küçük zirveleri bile sayar.
+    ret, sure_fg = cv2.threshold(dist_transform, 0.1 * dist_transform.max(), 255, 0)
+    
+    sure_fg = np.uint8(sure_fg)
+    unknown = cv2.subtract(sure_bg, sure_fg)
+    ret, markers = cv2.connectedComponents(sure_fg)
+    markers = markers + 1
+    markers[unknown == 255] = 0
+    markers = cv2.watershed(img_bgr, markers)
+
+    rbc_count = 0
+    for label in np.unique(markers):
+        if label <= 1: continue 
+        mask = np.zeros(gray.shape, dtype="uint8")
+        mask[markers == label] = 255
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(cnts) > 0:
+            c = max(cnts, key=cv2.contourArea)
+            if cv2.contourArea(c) > 30: # En küçük hücreleri bile alıyoruz
+                rbc_count += 1
+                ((cx, cy), radius) = cv2.minEnclosingCircle(c)
+                cv2.circle(final_output, (int(cx), int(cy)), 3, (255, 0, 0), -1)
+
+    # --- 5. SONUÇLAR ---
+    print("\n" + "="*40)
+    print(f"AKYUVAR (WBC) SAYISI: {wbc_count}")
+    print(f"ALYUVAR (RBC) SAYISI: {rbc_count}")
+    print("="*40)
+
+    plt.figure(figsize=(12, 7))
+    plt.imshow(final_output)
+    plt.title(f"Final: {wbc_count} WBC | {rbc_count} RBC")
     plt.axis('off')
-
-    plt.subplot(1, 3, 2)
-    plt.imshow(cleaned_mask, cmap='gray')
-    plt.title("2. Temizlenmis WBC Maskesi")
-    plt.axis('off')
-
-    plt.subplot(1, 3, 3)
-    plt.imshow(output_img)
-    plt.title(f"3. Tespit Edilen: {wbc_count} WBC")
-    plt.axis('off')
-
-    plt.tight_layout()
     plt.show()
-
-    print(f"Terminal Bilgisi: Toplam {wbc_count} adet Akyuvar bulundu.")
