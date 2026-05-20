@@ -1,0 +1,16 @@
+2026-05-20 15:05:44 - INFO - Toplu işlem başlıyor: 1 görüntü
+2026-05-20 15:05:44 - INFO - Girdi klasörü: data/BCCD_Dataset-master/BCCD/JPEGImages
+2026-05-20 15:05:44 - INFO - Rapor çıktısı: output/kan_sayim_raporu.xlsx
+2026-05-20 15:05:44 - INFO - [İŞLENİYOR] BloodImage_00000.jpg -> WBC: 14, RBC: 259
+2026-05-20 15:05:45 - INFO - Toplu işlem tamamlandı: 1 görüntü işlendi.
+2026-05-20 15:05:45 - INFO - Rapor kaydedildi: output/kan_sayim_raporu.xlsx
+2026-05-20 15:06:12 - INFO - Toplu işlem başlıyor: 2 görüntü
+2026-05-20 15:06:12 - INFO - Girdi klasörü: output/test_batch_err
+2026-05-20 15:06:12 - INFO - Rapor çıktısı: output/test_err_report.xlsx
+2026-05-20 15:06:12 - ERROR - [HATA] bad.jpg işlenemedi, atlanıyor... (dosya okunamadı)
+2026-05-20 15:06:12 - INFO - [İŞLENİYOR] good.jpg -> WBC: 14, RBC: 259
+2026-05-20 15:06:13 - INFO - Toplu işlem tamamlandı: 1 görüntü işlendi.
+2026-05-20 15:06:13 - INFO - Rapor kaydedildi: output/test_err_report.xlsx
+2026-05-20 15:07:03 - INFO - Analiz tamamlandı: BloodImage_00005.jpg -> WBC: 18, RBC: 231
+2026-05-20 15:07:54 - INFO - Analiz tamamlandı: BloodImage_00005.jpg -> WBC: 18, RBC: 231
+2026-05-20 15:08:01 - INFO - Analiz tamamlandı: BloodImage_00006.jpg -> WBC: 17, RBC: 168
