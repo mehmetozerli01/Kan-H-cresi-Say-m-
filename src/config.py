@@ -4,6 +4,7 @@
 CLAHE_CLIP_LIMIT = 3.0
 CLAHE_TILE_GRID_SIZE = (8, 8)
 MEDIAN_BLUR_KSIZE = 5
+BLUR_THRESHOLD = 100.0
 
 # --- WBC (Akyuvar) segmentasyonu ---
 WBC_LOWER_PURPLE = [120, 30, 30]
@@ -29,10 +30,17 @@ RBC_MIN_AREA = 30
 RBC_CIRCLE_RADIUS = 3
 RBC_CIRCLE_COLOR = (255, 0, 0)
 
+# --- Kenar hücre filtresi (kesik/yarım hücreleri ele) ---
+BORDER_MARGIN = 3
+
 # --- Varsayılan yollar ---
 DEFAULT_INPUT_DIR = "data/BCCD_Dataset-master/BCCD/JPEGImages"
 DEFAULT_OUTPUT_REPORT = "output/kan_sayim_raporu.xlsx"
 DEFAULT_PROCESSED_DIR = "output/processed_images"
+
+# --- WBC kırpma (ML veri seti) ---
+SAVE_CROPPED_WBC = True
+CROPPED_DIR = "output/extracted_wbcs/"
 
 # --- Loglama ---
 LOG_DIR = "logs"

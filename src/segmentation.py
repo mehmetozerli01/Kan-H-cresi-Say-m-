@@ -1,3 +1,5 @@
+import os
+
 import cv2
 import numpy as np
 
@@ -5,7 +7,10 @@ from config import (
     ADAPTIVE_THRESH_BLOCK_SIZE,
     ADAPTIVE_THRESH_C,
     ADAPTIVE_THRESH_MAX_VAL,
+    BORDER_MARGIN,
+    CROPPED_DIR,
     DIST_TRANSFORM_MASK_SIZE,
+    SAVE_CROPPED_WBC,
     RBC_CIRCLE_COLOR,
     RBC_CIRCLE_RADIUS,
     RBC_DILATE_ITERATIONS,
@@ -25,10 +30,58 @@ from config import (
 )
 
 
+def _average_area(areas: list[float]) -> float:
+    """Geçerli hücre alanlarının ortalaması; hücre yoksa 0."""
+    if not areas:
+        return 0.0
+    return round(sum(areas) / len(areas), 2)
+
+
+def _is_border_cell(
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    cx: float,
+    cy: float,
+    img_h: int,
+    img_w: int,
+    margin: int = BORDER_MARGIN,
+) -> bool:
+    """Kontur veya merkezi görüntü kenarına çok yakınsa True döner."""
+    if x <= margin or y <= margin:
+        return True
+    if x + w >= img_w - margin or y + h >= img_h - margin:
+        return True
+    if cx <= margin or cy <= margin:
+        return True
+    if cx >= img_w - margin or cy >= img_h - margin:
+        return True
+    return False
+
+
+def _save_wbc_crop(
+    img_bgr: np.ndarray, x: int, y: int, w: int, h: int, source_stem: str, index: int
+) -> None:
+    """Geçerli WBC bölgesini orijinal görüntüden kırpıp diske kaydeder (ML veri seti)."""
+    os.makedirs(CROPPED_DIR, exist_ok=True)
+    crop = img_bgr[y : y + h, x : x + w]
+    if crop.size == 0:
+        return
+    out_path = os.path.join(CROPPED_DIR, f"{source_stem}_WBC_{index}.jpg")
+    cv2.imwrite(out_path, crop)
+
+
 def count_wbc(
-    blurred: np.ndarray, output: np.ndarray
-) -> tuple[int, np.ndarray]:
+    blurred: np.ndarray,
+    output: np.ndarray,
+    img_bgr: np.ndarray | None = None,
+    source_stem: str | None = None,
+    wbc_min_area: int | None = None,
+) -> tuple[int, float, np.ndarray]:
     """HSV renk uzayı ve alan filtreleme ile akyuvar tespiti."""
+    min_area = WBC_MIN_AREA if wbc_min_area is None else wbc_min_area
+    img_h, img_w = output.shape[:2]
     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
     lower_purple = np.array(WBC_LOWER_PURPLE)
     upper_purple = np.array(WBC_UPPER_PURPLE)
@@ -43,33 +96,64 @@ def count_wbc(
     )
 
     wbc_count = 0
+    wbc_areas: list[float] = []
+    wbc_crop_index = 0
+    save_crops = SAVE_CROPPED_WBC and img_bgr is not None and source_stem
+
     for cnt in wbc_contours:
-        if cv2.contourArea(cnt) > WBC_MIN_AREA:
-            wbc_count += 1
-            x, y, w, h = cv2.boundingRect(cnt)
-            cv2.rectangle(
-                output,
-                (x, y),
-                (x + w, y + h),
-                WBC_RECT_COLOR,
-                WBC_RECT_THICKNESS,
-            )
-            cv2.putText(
-                output,
-                "WBC",
-                (x, y - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                WBC_FONT_SCALE,
-                WBC_RECT_COLOR,
-                WBC_FONT_THICKNESS,
-            )
-    return wbc_count, output
+        area = cv2.contourArea(cnt)
+        if area <= min_area:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+        moments = cv2.moments(cnt)
+        if moments["m00"] != 0:
+            cx = moments["m10"] / moments["m00"]
+            cy = moments["m01"] / moments["m00"]
+        else:
+            cx, cy = x + w / 2, y + h / 2
+
+        if _is_border_cell(x, y, w, h, cx, cy, img_h, img_w):
+            continue
+
+        wbc_count += 1
+        wbc_areas.append(area)
+        wbc_crop_index += 1
+        if save_crops:
+            _save_wbc_crop(img_bgr, x, y, w, h, source_stem, wbc_crop_index)
+        cv2.rectangle(
+            output,
+            (x, y),
+            (x + w, y + h),
+            WBC_RECT_COLOR,
+            WBC_RECT_THICKNESS,
+        )
+        cv2.putText(
+            output,
+            "WBC",
+            (x, y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            WBC_FONT_SCALE,
+            WBC_RECT_COLOR,
+            WBC_FONT_THICKNESS,
+        )
+
+    return wbc_count, _average_area(wbc_areas), output
 
 
 def count_rbc_watershed(
-    img_bgr: np.ndarray, blurred: np.ndarray, output: np.ndarray
-) -> tuple[int, np.ndarray]:
+    img_bgr: np.ndarray,
+    blurred: np.ndarray,
+    output: np.ndarray,
+    watershed_thresh_coeff: float | None = None,
+) -> tuple[int, float, np.ndarray]:
     """Adaptive Threshold, Distance Transform ve Watershed ile alyuvar sayımı."""
+    thresh_coeff = (
+        WATERSHED_THRESH_COEFF
+        if watershed_thresh_coeff is None
+        else watershed_thresh_coeff
+    )
+    img_h, img_w = output.shape[:2]
     gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
     thresh = cv2.adaptiveThreshold(
         gray,
@@ -91,7 +175,7 @@ def count_rbc_watershed(
     )
     ret, sure_fg = cv2.threshold(
         dist_transform,
-        WATERSHED_THRESH_COEFF * dist_transform.max(),
+        thresh_coeff * dist_transform.max(),
         WATERSHED_THRESH_MAX_VAL,
         0,
     )
@@ -104,6 +188,8 @@ def count_rbc_watershed(
     markers = cv2.watershed(img_bgr, markers)
 
     rbc_count = 0
+    rbc_areas: list[float] = []
+
     for label in np.unique(markers):
         if label <= 1:
             continue
@@ -112,17 +198,28 @@ def count_rbc_watershed(
         cnts, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
-        if len(cnts) > 0:
-            c = max(cnts, key=cv2.contourArea)
-            if cv2.contourArea(c) > RBC_MIN_AREA:
-                rbc_count += 1
-                ((cx, cy), radius) = cv2.minEnclosingCircle(c)
-                cv2.circle(
-                    output,
-                    (int(cx), int(cy)),
-                    RBC_CIRCLE_RADIUS,
-                    RBC_CIRCLE_COLOR,
-                    -1,
-                )
+        if len(cnts) == 0:
+            continue
 
-    return rbc_count, output
+        c = max(cnts, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        if area <= RBC_MIN_AREA:
+            continue
+
+        x, y, w, h = cv2.boundingRect(c)
+        ((cx, cy), radius) = cv2.minEnclosingCircle(c)
+
+        if _is_border_cell(x, y, w, h, cx, cy, img_h, img_w):
+            continue
+
+        rbc_count += 1
+        rbc_areas.append(area)
+        cv2.circle(
+            output,
+            (int(cx), int(cy)),
+            RBC_CIRCLE_RADIUS,
+            RBC_CIRCLE_COLOR,
+            -1,
+        )
+
+    return rbc_count, _average_area(rbc_areas), output

@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import glob
 import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from config import (
     DEFAULT_INPUT_DIR,
@@ -12,10 +13,15 @@ from config import (
     DEFAULT_PROCESSED_DIR,
 )
 from logging_setup import get_logger, setup_logging
-from preprocessing import apply_clahe_and_blur
+from preprocessing import apply_clahe_and_blur, get_sharpness_score, is_image_blurry
 from segmentation import count_wbc, count_rbc_watershed
 
 logger = get_logger(__name__)
+
+
+def default_worker_count() -> int:
+    """Varsayılan paralel işçi: CPU çekirdeği - 1 (en az 1)."""
+    return max(1, (os.cpu_count() or 2) - 1)
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,16 +49,36 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="İşlenmiş (annotasyonlu) görüntüleri output/processed_images/ altına kaydet",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=f"Paralel işçi sayısı (varsayılan: {default_worker_count()})",
+    )
     return parser.parse_args()
 
 
-class BloodCellAnalyzer:
-    """BCCD mikroskop görüntülerinde WBC ve RBC sayımı (orchestrator)."""
+def _save_processed_image(
+    final_output: np.ndarray, filename: str, images_dir: str
+) -> None:
+    """Annotasyonlu final görüntüyü diske kaydeder."""
+    os.makedirs(images_dir, exist_ok=True)
+    stem, _ = os.path.splitext(filename)
+    out_path = os.path.join(images_dir, f"{stem}_final.jpg")
+    out_bgr = cv2.cvtColor(final_output, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(out_path, out_bgr)
 
-    def _process_image(
-        self, image_path: str
-    ) -> tuple[int, int, np.ndarray, np.ndarray] | None:
-        """Tek görüntü için sayım ve annotasyonlu çıktı."""
+
+def _batch_worker(
+    args: tuple[str, bool, str],
+) -> dict[str, str | int | float] | None:
+    """
+    Tek görüntüyü işler (ProcessPoolExecutor için üst düzey fonksiyon).
+    Loglama ana thread'de yapılır; burada sadece sonuç döner.
+    """
+    image_path, save_images, processed_images_dir = args
+
+    try:
         if not os.path.exists(image_path):
             return None
 
@@ -60,34 +86,94 @@ class BloodCellAnalyzer:
         if img_bgr is None:
             return None
 
+        filename = os.path.basename(image_path)
+        stem, _ = os.path.splitext(filename)
+
+        img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        sharpness_score = get_sharpness_score(img_gray)
+
         blurred = apply_clahe_and_blur(img_bgr)
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         final_output = img_rgb.copy()
 
-        wbc_count, final_output = count_wbc(blurred, final_output)
-        rbc_count, final_output = count_rbc_watershed(
+        wbc_count, wbc_avg_area, final_output = count_wbc(
+            blurred, final_output, img_bgr=img_bgr, source_stem=stem
+        )
+        rbc_count, rbc_avg_area, final_output = count_rbc_watershed(
             img_bgr, blurred, final_output
         )
-        return wbc_count, rbc_count, img_rgb, final_output
 
-    def _count_cells(self, image_path: str) -> tuple[int, int] | None:
-        """Tek görüntü için WBC/RBC sayımı (görselleştirme yok)."""
+        if save_images:
+            _save_processed_image(final_output, filename, processed_images_dir)
+
+        total_cells = wbc_count + rbc_count
+        return {
+            "Dosya Adı": filename,
+            "WBC Sayısı": wbc_count,
+            "RBC Sayısı": rbc_count,
+            "Toplam Hücre Sayısı": total_cells,
+            "Ortalama WBC Alanı (px)": wbc_avg_area,
+            "Ortalama RBC Alanı (px)": rbc_avg_area,
+            "Netlik Skoru": sharpness_score,
+            "_blurry": is_image_blurry(img_gray),
+        }
+    except Exception:
+        return None
+
+
+class BloodCellAnalyzer:
+    """BCCD mikroskop görüntülerinde WBC ve RBC sayımı (orchestrator)."""
+
+    def _process_image(
+        self, image_path: str
+    ) -> tuple[int, int, float, float, float, np.ndarray, np.ndarray] | None:
+        """Tek görüntü için sayım, morfolojik metrikler ve annotasyonlu çıktı."""
+        if not os.path.exists(image_path):
+            return None
+
+        img_bgr = cv2.imread(image_path)
+        if img_bgr is None:
+            return None
+
+        filename = os.path.basename(image_path)
+        stem, _ = os.path.splitext(filename)
+
+        img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        sharpness_score = get_sharpness_score(img_gray)
+        if is_image_blurry(img_gray):
+            logger.warning(
+                "[UYARI] %s bulanık! (Skor: %s)", filename, sharpness_score
+            )
+
+        blurred = apply_clahe_and_blur(img_bgr)
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        final_output = img_rgb.copy()
+
+        wbc_count, wbc_avg_area, final_output = count_wbc(
+            blurred, final_output, img_bgr=img_bgr, source_stem=stem
+        )
+        rbc_count, rbc_avg_area, final_output = count_rbc_watershed(
+            img_bgr, blurred, final_output
+        )
+        return (
+            wbc_count,
+            rbc_count,
+            wbc_avg_area,
+            rbc_avg_area,
+            sharpness_score,
+            img_rgb,
+            final_output,
+        )
+
+    def _count_cells(
+        self, image_path: str
+    ) -> tuple[int, int, float, float] | None:
+        """Tek görüntü için WBC/RBC sayımı ve ortalama alan (görselleştirme yok)."""
         result = self._process_image(image_path)
         if result is None:
             return None
-        wbc_count, rbc_count, _, _ = result
-        return wbc_count, rbc_count
-
-    @staticmethod
-    def _save_processed_image(
-        final_output: np.ndarray, filename: str, images_dir: str
-    ) -> None:
-        """Annotasyonlu final görüntüyü diske kaydeder."""
-        os.makedirs(images_dir, exist_ok=True)
-        stem, _ = os.path.splitext(filename)
-        out_path = os.path.join(images_dir, f"{stem}_final.jpg")
-        out_bgr = cv2.cvtColor(final_output, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(out_path, out_bgr)
+        wbc_count, rbc_count, wbc_avg_area, rbc_avg_area, _, _, _ = result
+        return wbc_count, rbc_count, wbc_avg_area, rbc_avg_area
 
     def analyze_image(self, image_path: str) -> None:
         """Tek bir görüntüyü işler, sonuçları terminale yazar ve görselleştirir."""
@@ -101,11 +187,16 @@ class BloodCellAnalyzer:
             logger.error("HATA: %s bulunamadı veya okunamadı!", image_path)
             return
 
-        wbc_count, rbc_count, img_rgb, final_output = result
+        wbc_count, rbc_count, wbc_avg_area, rbc_avg_area, sharpness, img_rgb, final_output = (
+            result
+        )
+        logger.info("Netlik skoru: %s", sharpness)
 
         logger.info("=" * 40)
         logger.info("AKYUVAR (WBC) SAYISI: %s", wbc_count)
+        logger.info("ORTALAMA WBC ALANI: %s px", wbc_avg_area)
         logger.info("ALYUVAR (RBC) SAYISI: %s", rbc_count)
+        logger.info("ORTALAMA RBC ALANI: %s px", rbc_avg_area)
         logger.info("=" * 40)
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 7))
@@ -199,8 +290,9 @@ class BloodCellAnalyzer:
         output_path: str = DEFAULT_OUTPUT_REPORT,
         save_images: bool = False,
         processed_images_dir: str = DEFAULT_PROCESSED_DIR,
+        workers: int | None = None,
     ) -> pd.DataFrame | None:
-        """Klasördeki görüntüleri işler, sonuçları Excel/CSV raporuna yazar."""
+        """Klasördeki görüntüleri paralel işler, sonuçları Excel/CSV raporuna yazar."""
         if not os.path.isdir(folder_path):
             logger.error("HATA: Klasör bulunamadı: %s", folder_path)
             return None
@@ -215,64 +307,65 @@ class BloodCellAnalyzer:
         if limit is not None:
             image_paths = image_paths[:limit]
 
+        if workers is None:
+            workers = default_worker_count()
+
         total = len(image_paths)
         logger.info("Toplu işlem başlıyor: %s görüntü", total)
         logger.info("Girdi klasörü: %s", folder_path)
         logger.info("Rapor çıktısı: %s", output_path)
+        logger.info("Paralel işçi sayısı: %s", workers)
         if save_images:
             logger.info("Görüntü kaydı: %s", processed_images_dir)
 
-        results: list[dict[str, str | int]] = []
-
-        for image_path in image_paths:
-            filename = os.path.basename(image_path)
-
-            try:
-                if save_images:
-                    result = self._process_image(image_path)
-                    if result is None:
-                        logger.error(
-                            "[HATA] %s işlenemedi, atlanıyor... (dosya okunamadı)",
-                            filename,
-                        )
-                        continue
-                    wbc_count, rbc_count, _, final_output = result
-                    self._save_processed_image(
-                        final_output, filename, processed_images_dir
+        worker_args = [
+            (path, save_images, processed_images_dir) for path in image_paths
+        ]
+        results: list[dict[str, str | int | float]] = []
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_path = {
+                executor.submit(_batch_worker, arg): arg[0] for arg in worker_args
+            }
+            for future in as_completed(future_to_path):
+                image_path = future_to_path[future]
+                filename = os.path.basename(image_path)
+                try:
+                    row = future.result()
+                except Exception as exc:
+                    logger.error(
+                        "[HATA] %s işlenemedi, atlanıyor... Sebep: %s",
+                        filename,
+                        exc,
                     )
-                else:
-                    counts = self._count_cells(image_path)
-                    if counts is None:
-                        logger.error(
-                            "[HATA] %s işlenemedi, atlanıyor... (dosya okunamadı)",
-                            filename,
-                        )
-                        continue
-                    wbc_count, rbc_count = counts
+                    continue
 
-            except Exception as exc:
-                logger.error(
-                    "[HATA] %s işlenemedi, atlanıyor... Sebep: %s",
+                if row is None:
+                    logger.error(
+                        "[HATA] %s işlenemedi, atlanıyor... (dosya okunamadı)",
+                        filename,
+                    )
+                    continue
+
+                if row.pop("_blurry", False):
+                    logger.warning(
+                        "[UYARI] %s bulanık! (Skor: %s)",
+                        filename,
+                        row["Netlik Skoru"],
+                    )
+
+                logger.info(
+                    "[İŞLENİYOR] %s -> WBC: %s, RBC: %s | Ort. Alan: WBC=%s px, "
+                    "RBC=%s px | Netlik: %s",
                     filename,
-                    exc,
+                    row["WBC Sayısı"],
+                    row["RBC Sayısı"],
+                    row["Ortalama WBC Alanı (px)"],
+                    row["Ortalama RBC Alanı (px)"],
+                    row["Netlik Skoru"],
                 )
-                continue
-
-            total_cells = wbc_count + rbc_count
-            logger.info(
-                "[İŞLENİYOR] %s -> WBC: %s, RBC: %s",
-                filename,
-                wbc_count,
-                rbc_count,
-            )
-            results.append(
-                {
-                    "Dosya Adı": filename,
-                    "WBC Sayısı": wbc_count,
-                    "RBC Sayısı": rbc_count,
-                    "Toplam Hücre Sayısı": total_cells,
-                }
-            )
+                results.append(
+                    {k: v for k, v in row.items() if not k.startswith("_")}
+                )
 
         if not results:
             logger.error(
@@ -280,6 +373,7 @@ class BloodCellAnalyzer:
             )
             return None
 
+        results.sort(key=lambda r: r["Dosya Adı"])
         df = pd.DataFrame(results)
         summary_df = self._build_summary_df(df)
         saved_path = self._save_report(df, summary_df, output_path)
@@ -294,10 +388,12 @@ class BloodCellAnalyzer:
 if __name__ == "__main__":
     setup_logging()
     args = parse_args()
+    workers = args.workers if args.workers is not None else default_worker_count()
     analyzer = BloodCellAnalyzer()
     analyzer.analyze_batch(
         folder_path=args.input,
         limit=args.limit,
         output_path=args.output,
         save_images=args.save_images,
+        workers=workers,
     )
