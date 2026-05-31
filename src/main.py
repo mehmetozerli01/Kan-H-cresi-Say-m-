@@ -96,10 +96,10 @@ def _batch_worker(
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         final_output = img_rgb.copy()
 
-        wbc_count, wbc_avg_area, final_output = count_wbc(
+        wbc_count, wbc_avg_area, final_output, _ = count_wbc(
             blurred, final_output, img_bgr=img_bgr, source_stem=stem
         )
-        rbc_count, rbc_avg_area, final_output = count_rbc_watershed(
+        rbc_count, rbc_avg_area, final_output, _ = count_rbc_watershed(
             img_bgr, blurred, final_output
         )
 
@@ -149,10 +149,10 @@ class BloodCellAnalyzer:
         img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         final_output = img_rgb.copy()
 
-        wbc_count, wbc_avg_area, final_output = count_wbc(
+        wbc_count, wbc_avg_area, final_output, _ = count_wbc(
             blurred, final_output, img_bgr=img_bgr, source_stem=stem
         )
-        rbc_count, rbc_avg_area, final_output = count_rbc_watershed(
+        rbc_count, rbc_avg_area, final_output, _ = count_rbc_watershed(
             img_bgr, blurred, final_output
         )
         return (

@@ -1,0 +1,10 @@
+opencv-python
+numpy
+pandas
+matplotlib
+openpyxl
+streamlit
+plotly
+python-dotenv
+google-generativeai
+reportlab

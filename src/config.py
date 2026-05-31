@@ -42,6 +42,12 @@ DEFAULT_PROCESSED_DIR = "output/processed_images"
 SAVE_CROPPED_WBC = True
 CROPPED_DIR = "output/extracted_wbcs/"
 
+# --- Klinik referans aralıkları (mikroskop alanı / görüntü başına) ---
+REF_WBC_MIN = 5
+REF_WBC_MAX = 15
+REF_RBC_MIN = 200
+REF_RBC_MAX = 300
+
 # --- Loglama ---
 LOG_DIR = "logs"
 LOG_FILE = "logs/pipeline.log"

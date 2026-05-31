@@ -37,6 +37,15 @@ def _average_area(areas: list[float]) -> float:
     return round(sum(areas) / len(areas), 2)
 
 
+def _cell_record(cell_type: str, area: float) -> dict[str, str | float]:
+    """Tek hücre için detay satırı."""
+    return {
+        "Hücre Tipi": cell_type,
+        "Alan (px)": round(float(area), 2),
+        "Durum": "Tam",
+    }
+
+
 def _is_border_cell(
     x: int,
     y: int,
@@ -78,7 +87,7 @@ def count_wbc(
     img_bgr: np.ndarray | None = None,
     source_stem: str | None = None,
     wbc_min_area: int | None = None,
-) -> tuple[int, float, np.ndarray]:
+) -> tuple[int, float, np.ndarray, list[dict[str, str | float]]]:
     """HSV renk uzayı ve alan filtreleme ile akyuvar tespiti."""
     min_area = WBC_MIN_AREA if wbc_min_area is None else wbc_min_area
     img_h, img_w = output.shape[:2]
@@ -97,6 +106,7 @@ def count_wbc(
 
     wbc_count = 0
     wbc_areas: list[float] = []
+    cell_records: list[dict[str, str | float]] = []
     wbc_crop_index = 0
     save_crops = SAVE_CROPPED_WBC and img_bgr is not None and source_stem
 
@@ -118,6 +128,7 @@ def count_wbc(
 
         wbc_count += 1
         wbc_areas.append(area)
+        cell_records.append(_cell_record("WBC", area))
         wbc_crop_index += 1
         if save_crops:
             _save_wbc_crop(img_bgr, x, y, w, h, source_stem, wbc_crop_index)
@@ -138,7 +149,7 @@ def count_wbc(
             WBC_FONT_THICKNESS,
         )
 
-    return wbc_count, _average_area(wbc_areas), output
+    return wbc_count, _average_area(wbc_areas), output, cell_records
 
 
 def count_rbc_watershed(
@@ -146,7 +157,7 @@ def count_rbc_watershed(
     blurred: np.ndarray,
     output: np.ndarray,
     watershed_thresh_coeff: float | None = None,
-) -> tuple[int, float, np.ndarray]:
+) -> tuple[int, float, np.ndarray, list[dict[str, str | float]]]:
     """Adaptive Threshold, Distance Transform ve Watershed ile alyuvar sayımı."""
     thresh_coeff = (
         WATERSHED_THRESH_COEFF
@@ -189,6 +200,7 @@ def count_rbc_watershed(
 
     rbc_count = 0
     rbc_areas: list[float] = []
+    cell_records: list[dict[str, str | float]] = []
 
     for label in np.unique(markers):
         if label <= 1:
@@ -214,6 +226,7 @@ def count_rbc_watershed(
 
         rbc_count += 1
         rbc_areas.append(area)
+        cell_records.append(_cell_record("RBC", area))
         cv2.circle(
             output,
             (int(cx), int(cy)),
@@ -222,4 +235,4 @@ def count_rbc_watershed(
             -1,
         )
 
-    return rbc_count, _average_area(rbc_areas), output
+    return rbc_count, _average_area(rbc_areas), output, cell_records
