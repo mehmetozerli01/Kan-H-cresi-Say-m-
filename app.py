@@ -4,12 +4,16 @@ Mevcut preprocessing ve segmentation modüllerini kullanır.
 """
 
 import glob
+import hashlib
 import html
 import io
 import sys
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
+
+import psutil
 
 import cv2
 import numpy as np
@@ -48,12 +52,17 @@ PLOTLY_VIEWER_CONFIG = {
     "modeBarButtonsToRemove": ["lasso2d", "select2d"],
 }
 CELL_COLOR_MAP = {"WBC": "#2e7d32", "RBC": "#c62828"}
+DEVELOPER_NAME = "Mehmet Özerli"
 
 
 def init_session_state() -> None:
     """Oturum değişkenlerini başlatır."""
     if "history" not in st.session_state:
         st.session_state.history = []
+    if "telemetry" not in st.session_state:
+        st.session_state.telemetry = None
+    if "upload_fingerprint" not in st.session_state:
+        st.session_state.upload_fingerprint = ""
 
 
 def append_analysis_history(entry: dict) -> None:
@@ -192,37 +201,72 @@ def build_cell_details_df(cell_records: list[dict]) -> pd.DataFrame:
     return df[["Hücre Tipi", "Alan (px)", "Durum"]]
 
 
+def read_uploaded_bytes(uploaded_file) -> tuple[bytes, str]:
+    """Yüklenen dosyanın ham baytlarını ve adını döndürür."""
+    uploaded_file.seek(0)
+    file_bytes = uploaded_file.read()
+    uploaded_file.seek(0)
+    return file_bytes, uploaded_file.name
+
+
 def load_uploaded_image(uploaded_file) -> np.ndarray | None:
     """Streamlit yüklemesini OpenCV BGR dizisine çevirir."""
-    uploaded_file.seek(0)
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    return img_bgr
+    file_bytes, _ = read_uploaded_bytes(uploaded_file)
+    arr = np.asarray(bytearray(file_bytes), dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 
-def normalize_uploaded_files(uploaded) -> list:
-    """file_uploader çıktısını dosya listesine çevirir."""
-    if uploaded is None:
-        return []
-    if isinstance(uploaded, list):
-        return uploaded
-    return [uploaded]
+def build_upload_fingerprint(uploaded_files: list) -> str:
+    """Yükleme seti için önbellek anahtarı parmak izi."""
+    parts: list[str] = []
+    for uploaded in uploaded_files:
+        file_bytes, name = read_uploaded_bytes(uploaded)
+        digest = hashlib.md5(file_bytes, usedforsecurity=False).hexdigest()
+        parts.append(f"{name}:{len(file_bytes)}:{digest}")
+    return "|".join(sorted(parts))
 
 
-def process_single_file(
-    uploaded_file,
+def sync_upload_cache(uploaded_files: list) -> None:
+    """Yeni görüntü yüklendiğinde analiz önbelleğini temizler."""
+    fingerprint = build_upload_fingerprint(uploaded_files) if uploaded_files else ""
+    if st.session_state.get("upload_fingerprint") != fingerprint:
+        run_cached_image_analysis.clear()
+        st.session_state.upload_fingerprint = fingerprint
+
+
+def collect_system_telemetry() -> tuple[float, float]:
+    """Anlık CPU ve RAM kullanım yüzdeleri."""
+    cpu_percent = psutil.cpu_percent(interval=0.05)
+    ram_percent = psutil.virtual_memory().percent
+    return cpu_percent, ram_percent
+
+
+def store_telemetry(processing_sec: float) -> None:
+    """Son analiz telemetrisini oturuma yazar."""
+    cpu_percent, ram_percent = collect_system_telemetry()
+    st.session_state.telemetry = {
+        "processing_sec": processing_sec,
+        "cpu_percent": cpu_percent,
+        "ram_percent": ram_percent,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def run_cached_image_analysis(
+    file_bytes: bytes,
+    filename: str,
     wbc_param: int | None,
     ws_param: float | None,
 ) -> dict | None:
-    """Tek dosyayı analiz eder; sonuç sözlüğü veya None döner."""
-    img_bgr = load_uploaded_image(uploaded_file)
+    """OpenCV/segmentasyon analizi — Streamlit önbellekli."""
+    arr = np.asarray(bytearray(file_bytes), dtype=np.uint8)
+    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img_bgr is None:
         return None
 
-    source_stem = Path(uploaded_file.name).stem
+    source_stem = Path(filename).stem
     img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     qc_score = get_sharpness_score(img_gray)
-    analyzed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     wbc, rbc, wbc_avg, rbc_avg, original_rgb, final_rgb, cell_records = (
         analyze_blood_image(
@@ -242,10 +286,37 @@ def process_single_file(
         "original": original_rgb,
         "final": final_rgb,
         "cell_records": cell_records,
-        "filename": uploaded_file.name,
-        "analyzed_at": analyzed_at,
+        "filename": filename,
         "source_stem": source_stem,
     }
+
+
+def normalize_uploaded_files(uploaded) -> list:
+    """file_uploader çıktısını dosya listesine çevirir."""
+    if uploaded is None:
+        return []
+    if isinstance(uploaded, list):
+        return uploaded
+    return [uploaded]
+
+
+def process_single_file(
+    uploaded_file,
+    wbc_param: int | None,
+    ws_param: float | None,
+) -> tuple[dict | None, float]:
+    """Tek dosyayı analiz eder; (sonuç, süre_sn) veya (None, süre) döner."""
+    file_bytes, filename = read_uploaded_bytes(uploaded_file)
+    t0 = time.perf_counter()
+    cached = run_cached_image_analysis(file_bytes, filename, wbc_param, ws_param)
+    elapsed = time.perf_counter() - t0
+
+    if cached is None:
+        return None, elapsed
+
+    result = dict(cached)
+    result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return result, elapsed
 
 
 def render_clinical_alerts(wbc: int, rbc: int) -> None:
@@ -526,8 +597,24 @@ def render_sidebar_controls():
         )
 
     render_history_panel()
+    render_system_telemetry_panel()
 
     return uploaded_file, analyze_clicked, dev_mode, wbc_min_area, watershed_coeff
+
+
+def render_system_telemetry_panel() -> None:
+    """Sidebar altında son analiz donanım telemetrisi."""
+    telemetry = st.session_state.get("telemetry")
+    if not telemetry:
+        return
+
+    st.divider()
+    st.markdown("##### 📡 Sistem Telemetrisi")
+    st.info(
+        f"**Görüntü İşleme Süresi:** {telemetry['processing_sec']:.2f} sn  \n"
+        f"**CPU Kullanımı:** %{telemetry['cpu_percent']:.1f}  \n"
+        f"**RAM Kullanımı:** %{telemetry['ram_percent']:.1f}"
+    )
 
 
 def apply_custom_styles() -> None:
@@ -659,6 +746,18 @@ def render_metrics_row(results: dict) -> None:
         f"WBC {REF_WBC_MIN}–{REF_WBC_MAX}, RBC {REF_RBC_MIN}–{REF_RBC_MAX}"
     )
     render_clinical_alerts(results["wbc"], results["rbc"])
+    render_system_telemetry_inline()
+
+
+def render_system_telemetry_inline() -> None:
+    """Metrik satırı altında kısa telemetri özeti."""
+    telemetry = st.session_state.get("telemetry")
+    if not telemetry:
+        return
+    st.caption(
+        f"📡 Sistem Telemetrisi — İşlem: {telemetry['processing_sec']:.2f} sn | "
+        f"CPU: %{telemetry['cpu_percent']:.1f} | RAM: %{telemetry['ram_percent']:.1f}"
+    )
 
 
 def render_single_results(results: dict) -> None:
@@ -802,6 +901,214 @@ def render_single_results(results: dict) -> None:
         )
 
 
+def render_architecture_tab() -> None:
+    """Jüri sunumu için sistem mimarisi ve proje dokümantasyonu."""
+    st.markdown(
+        """
+        <div class="section-card">
+        <h2 style="color:#1a365d;margin-top:0;">Kan Hücresi Sayımı — Sistem Mimarisi</h2>
+        <p style="color:#5a6b7d;line-height:1.7;">
+        Bu modül, kan yayması mikroskop görüntülerinden otonom WBC/RBC sayımı yapan
+        uçtan uca bir HealthTech analiz platformunun teknik özetidir.
+        </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### 🎯 Proje Amacı")
+    st.markdown(
+        """
+        BCCD (Blood Cell Count and Detection) veri seti formatındaki kan yayması
+        görüntülerinden **akyuvar (WBC)** ve **alyuvar (RBC)** hücrelerinin otonom
+        tespiti ve sayımı; klinik karar desteği için sayısal metrikler, morfolojik
+        dağılım grafikleri ve yapay zeka destekli ön değerlendirme raporu üretimi.
+        """
+    )
+
+    st.markdown("### 🔬 Görüntü İşleme Pipeline")
+    st.markdown(
+        """
+        | Adım | Teknoloji | Açıklama |
+        |------|-----------|----------|
+        | 1 | **CLAHE** | Kontrast sınırlı adaptif histogram eşitleme |
+        | 2 | **Median Blur** | Gürültü azaltma, kenar koruma |
+        | 3 | **HSV Maskeleme** | Morfoloji tabanlı WBC (mor çekirdek) segmentasyonu |
+        | 4 | **Adaptive Threshold** | RBC için yerel eşikleme |
+        | 5 | **Distance Transform** | Alyuvar çekirdek merkezlerinin ayrıştırılması |
+        | 6 | **Watershed** | Bitişik RBC kütlelerinin bölünmesi |
+        """
+    )
+
+    st.markdown("### 🤖 Yapay Zeka Entegrasyonu")
+    st.markdown(
+        """
+        - **Model:** Google Gemini (`gemini-flash-latest`) LLM API
+        - **Modül:** `src/ai_reporter.py` — prompt engineering ile hematoloji odaklı
+          ön değerlendirme metni
+        - **Çıktı:** Streamlit arayüzünde rapor + **ReportLab** ile PDF hasta özeti
+        - **Not:** Sonuçlar yalnızca bilgilendirme amaçlıdır; kesin tanı yerine geçmez.
+        """
+    )
+
+    st.markdown("### 🏗️ Yazılım Mimarisi")
+    st.markdown(
+        """
+        ```
+        app.py (Streamlit UI)
+            ├── src/preprocessing.py   → CLAHE, netlik QC
+            ├── src/segmentation.py    → WBC/RBC sayımı
+            ├── src/config.py          → Merkezi parametreler
+            ├── src/main.py            → CLI toplu işleme + Excel
+            ├── src/ai_reporter.py     → Gemini raporlama
+            └── src/pdf_exporter.py    → PDF dışa aktarım
+        ```
+        """
+    )
+
+    st.markdown("### ⚡ Performans ve Önbellek")
+    st.markdown(
+        """
+        - `@st.cache_data` ile OpenCV analizi önbelleğe alınır; PDF/AI butonlarında
+          gereksiz yeniden hesaplama engellenir.
+        - Yeni görüntü yüklendiğinde parmak izi değişir ve önbellek otomatik temizlenir.
+        - `psutil` ile CPU/RAM telemetrisi; `time.perf_counter` ile işlem süresi ölçülür.
+        """
+    )
+
+    st.markdown("### 👤 Geliştirici")
+    st.markdown(f"**{DEVELOPER_NAME}**")
+
+    st.markdown("### 📦 Teknoloji Yığını")
+    st.markdown(
+        "Python · OpenCV · NumPy · Pandas · Streamlit · Plotly · "
+        "Google Generative AI · ReportLab · psutil"
+    )
+
+
+def render_live_analysis_tab(
+    uploaded_file,
+    analyze_clicked: bool,
+    dev_mode: bool,
+    wbc_min_area: int | None,
+    watershed_coeff: float | None,
+) -> None:
+    """Canlı analiz sekmesi: yükleme sonuçları ve grafikler."""
+    uploaded_files = normalize_uploaded_files(uploaded_file)
+
+    if analyze_clicked:
+        if not uploaded_files:
+            st.warning("Lütfen önce en az bir görüntü yükleyin.")
+        else:
+            wbc_param = wbc_min_area if dev_mode else None
+            ws_param = watershed_coeff if dev_mode else None
+
+            if dev_mode:
+                st.info(
+                    f"Dev Mode aktif — WBC min alan: {wbc_param}, "
+                    f"Watershed: {ws_param}"
+                )
+
+            if len(uploaded_files) == 1:
+                file = uploaded_files[0]
+                try:
+                    with st.spinner("Analiz yapılıyor..."):
+                        result, elapsed = process_single_file(
+                            file, wbc_param, ws_param
+                        )
+                except Exception as exc:
+                    logger.error("Analiz hatası (%s): %s", file.name, exc)
+                    st.error(f"Analiz sırasında hata oluştu: {exc}")
+                else:
+                    if result is None:
+                        st.error(
+                            f"{file.name} okunamadı. Geçerli bir JPG/JPEG dosyası yükleyin."
+                        )
+                    else:
+                        store_telemetry(elapsed)
+                        result["dev_mode"] = dev_mode
+                        result["wbc_min_area_param"] = wbc_param or WBC_MIN_AREA
+                        result["watershed_coeff_param"] = (
+                            ws_param or WATERSHED_THRESH_COEFF
+                        )
+                        append_analysis_history(
+                            {
+                                "Dosya": result["filename"],
+                                "WBC": result["wbc"],
+                                "RBC": result["rbc"],
+                                "Netlik": result["qc_score"],
+                                "Tarih": result["analyzed_at"],
+                            }
+                        )
+                        st.session_state.pop("ai_report", None)
+                        st.session_state.pop("batch_results", None)
+                        st.session_state["results"] = result
+                        build_wbc_dataset_zip.clear()
+            else:
+                batch_results: list[dict] = []
+                total_elapsed = 0.0
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+
+                for idx, file in enumerate(uploaded_files):
+                    status_text.text(
+                        f"İşleniyor ({idx + 1}/{len(uploaded_files)}): {file.name}"
+                    )
+                    try:
+                        result, elapsed = process_single_file(
+                            file, wbc_param, ws_param
+                        )
+                        total_elapsed += elapsed
+                    except Exception as exc:
+                        logger.error("Analiz hatası (%s): %s", file.name, exc)
+                        st.warning(f"{file.name} atlandı: {exc}")
+                        result = None
+
+                    if result is not None:
+                        batch_results.append(result)
+                        append_analysis_history(
+                            {
+                                "Dosya": result["filename"],
+                                "WBC": result["wbc"],
+                                "RBC": result["rbc"],
+                                "Netlik": result["qc_score"],
+                                "Tarih": result["analyzed_at"],
+                            }
+                        )
+
+                    progress_bar.progress((idx + 1) / len(uploaded_files))
+
+                progress_bar.empty()
+                status_text.empty()
+
+                if not batch_results:
+                    st.error("Hiçbir görüntü işlenemedi.")
+                else:
+                    store_telemetry(total_elapsed)
+                    st.session_state.pop("ai_report", None)
+                    st.session_state.pop("results", None)
+                    st.session_state["batch_results"] = batch_results
+                    build_wbc_dataset_zip.clear()
+                    st.success(
+                        f"{len(batch_results)} / {len(uploaded_files)} görüntü "
+                        "başarıyla analiz edildi."
+                    )
+
+    batch_results = st.session_state.get("batch_results")
+    results = st.session_state.get("results")
+
+    if batch_results:
+        render_batch_summary(batch_results)
+        render_system_telemetry_inline()
+    elif results:
+        render_single_results(results)
+    else:
+        st.info(
+            "Sol menüden bir veya birden fazla kan hücresi görüntüsü yükleyip "
+            "**Analizi Başlat** butonuna basarak analizi başlatın."
+        )
+
+
 def render_batch_summary(batch_results: list[dict]) -> None:
     """Çoklu dosya toplu özet görünümü."""
     st.subheader(f"Toplu Analiz Özeti ({len(batch_results)} görüntü)")
@@ -863,109 +1170,21 @@ def main() -> None:
             watershed_coeff,
         ) = render_sidebar_controls()
 
-    uploaded_files = normalize_uploaded_files(uploaded_file)
+    sync_upload_cache(normalize_uploaded_files(uploaded_file))
 
-    if analyze_clicked:
-        if not uploaded_files:
-            st.warning("Lütfen önce en az bir görüntü yükleyin.")
-        else:
-            wbc_param = wbc_min_area if dev_mode else None
-            ws_param = watershed_coeff if dev_mode else None
+    tab_live, tab_arch = st.tabs(["🔬 Canlı Analiz", "📚 Sistem Mimarisi"])
 
-            if dev_mode:
-                st.info(
-                    f"Dev Mode aktif — WBC min alan: {wbc_param}, "
-                    f"Watershed: {ws_param}"
-                )
-
-            if len(uploaded_files) == 1:
-                file = uploaded_files[0]
-                try:
-                    with st.spinner("Analiz yapılıyor..."):
-                        result = process_single_file(file, wbc_param, ws_param)
-                except Exception as exc:
-                    logger.error("Analiz hatası (%s): %s", file.name, exc)
-                    st.error(f"Analiz sırasında hata oluştu: {exc}")
-                else:
-                    if result is None:
-                        st.error(
-                            f"{file.name} okunamadı. Geçerli bir JPG/JPEG dosyası yükleyin."
-                        )
-                    else:
-                        result["dev_mode"] = dev_mode
-                        result["wbc_min_area_param"] = wbc_param or WBC_MIN_AREA
-                        result["watershed_coeff_param"] = (
-                            ws_param or WATERSHED_THRESH_COEFF
-                        )
-                        append_analysis_history(
-                            {
-                                "Dosya": result["filename"],
-                                "WBC": result["wbc"],
-                                "RBC": result["rbc"],
-                                "Netlik": result["qc_score"],
-                                "Tarih": result["analyzed_at"],
-                            }
-                        )
-                        st.session_state.pop("ai_report", None)
-                        st.session_state.pop("batch_results", None)
-                        st.session_state["results"] = result
-                        build_wbc_dataset_zip.clear()
-            else:
-                batch_results: list[dict] = []
-                progress_bar = st.progress(0.0)
-                status_text = st.empty()
-
-                for idx, file in enumerate(uploaded_files):
-                    status_text.text(
-                        f"İşleniyor ({idx + 1}/{len(uploaded_files)}): {file.name}"
-                    )
-                    try:
-                        result = process_single_file(file, wbc_param, ws_param)
-                    except Exception as exc:
-                        logger.error("Analiz hatası (%s): %s", file.name, exc)
-                        st.warning(f"{file.name} atlandı: {exc}")
-                        result = None
-
-                    if result is not None:
-                        batch_results.append(result)
-                        append_analysis_history(
-                            {
-                                "Dosya": result["filename"],
-                                "WBC": result["wbc"],
-                                "RBC": result["rbc"],
-                                "Netlik": result["qc_score"],
-                                "Tarih": result["analyzed_at"],
-                            }
-                        )
-
-                    progress_bar.progress((idx + 1) / len(uploaded_files))
-
-                progress_bar.empty()
-                status_text.empty()
-
-                if not batch_results:
-                    st.error("Hiçbir görüntü işlenemedi.")
-                else:
-                    st.session_state.pop("ai_report", None)
-                    st.session_state.pop("results", None)
-                    st.session_state["batch_results"] = batch_results
-                    build_wbc_dataset_zip.clear()
-                    st.success(
-                        f"{len(batch_results)} / {len(uploaded_files)} görüntü başarıyla analiz edildi."
-                    )
-
-    batch_results = st.session_state.get("batch_results")
-    results = st.session_state.get("results")
-
-    if batch_results:
-        render_batch_summary(batch_results)
-    elif results:
-        render_single_results(results)
-    else:
-        st.info(
-            "Sol menüden bir veya birden fazla kan hücresi görüntüsü yükleyip "
-            "**Analizi Başlat** butonuna basarak analizi başlatın."
+    with tab_live:
+        render_live_analysis_tab(
+            uploaded_file,
+            analyze_clicked,
+            dev_mode,
+            wbc_min_area,
+            watershed_coeff,
         )
+
+    with tab_arch:
+        render_architecture_tab()
 
 
 if __name__ == "__main__":

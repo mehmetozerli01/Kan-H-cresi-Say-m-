@@ -8,3 +8,4 @@ plotly
 python-dotenv
 google-generativeai
 reportlab
+psutil

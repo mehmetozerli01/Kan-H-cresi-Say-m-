@@ -1,0 +1,19 @@
+{
+  "class_names": [
+    "WBC",
+    "RBC",
+    "Platelets"
+  ],
+  "crop_counts_by_class": {
+    "WBC": 372,
+    "RBC": 4153,
+    "Platelets": 361
+  },
+  "split_sizes": {
+    "train": 2804,
+    "val": 1137,
+    "test": 945
+  },
+  "img_size": 64,
+  "bccd_root": "C:\\Users\\memol\\Desktop\\Kan Hücresi Sayımı\\data\\BCCD_Dataset-master\\BCCD"
+}

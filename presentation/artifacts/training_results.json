@@ -1,0 +1,205 @@
+{
+  "class_names": [
+    "WBC",
+    "RBC",
+    "Platelets"
+  ],
+  "epochs": 20,
+  "img_size": 64,
+  "device": "cpu",
+  "best_val_acc_percent": 99.824,
+  "test_accuracy_percent": 99.577,
+  "confusion_matrix": [
+    [
+      71,
+      0,
+      0
+    ],
+    [
+      1,
+      804,
+      0
+    ],
+    [
+      2,
+      1,
+      66
+    ]
+  ],
+  "classification_report": {
+    "WBC": {
+      "precision": 0.9594594594594594,
+      "recall": 1.0,
+      "f1-score": 0.9793103448275862,
+      "support": 71.0
+    },
+    "RBC": {
+      "precision": 0.9987577639751553,
+      "recall": 0.9987577639751553,
+      "f1-score": 0.9987577639751553,
+      "support": 805.0
+    },
+    "Platelets": {
+      "precision": 1.0,
+      "recall": 0.9565217391304348,
+      "f1-score": 0.9777777777777777,
+      "support": 69.0
+    },
+    "accuracy": 0.9957671957671957,
+    "macro avg": {
+      "precision": 0.9860724078115383,
+      "recall": 0.9850931677018634,
+      "f1-score": 0.9852819621935064,
+      "support": 945.0
+    },
+    "weighted avg": {
+      "precision": 0.995895895895896,
+      "recall": 0.9957671957671957,
+      "f1-score": 0.995764763121085,
+      "support": 945.0
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.34898,
+      "val_loss": 0.13653,
+      "train_acc": 91.476,
+      "val_acc": 98.857
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.10215,
+      "val_loss": 0.03252,
+      "train_acc": 98.466,
+      "val_acc": 99.648
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.0779,
+      "val_loss": 0.03536,
+      "train_acc": 98.823,
+      "val_acc": 99.56
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.11384,
+      "val_loss": 0.02533,
+      "train_acc": 98.288,
+      "val_acc": 99.648
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.06885,
+      "val_loss": 0.07139,
+      "train_acc": 99.144,
+      "val_acc": 97.625
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.03557,
+      "val_loss": 0.02242,
+      "train_acc": 99.608,
+      "val_acc": 99.56
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.07366,
+      "val_loss": 0.03602,
+      "train_acc": 99.429,
+      "val_acc": 99.384
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.04455,
+      "val_loss": 0.03847,
+      "train_acc": 99.429,
+      "val_acc": 99.736
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.06009,
+      "val_loss": 0.05907,
+      "train_acc": 99.18,
+      "val_acc": 99.472
+    },
+    {
+      "epoch": 10,
+      "train_loss": 0.04298,
+      "val_loss": 0.06633,
+      "train_acc": 99.465,
+      "val_acc": 98.945
+    },
+    {
+      "epoch": 11,
+      "train_loss": 0.04556,
+      "val_loss": 0.05529,
+      "train_acc": 99.536,
+      "val_acc": 99.472
+    },
+    {
+      "epoch": 12,
+      "train_loss": 0.03008,
+      "val_loss": 0.01375,
+      "train_acc": 99.786,
+      "val_acc": 99.736
+    },
+    {
+      "epoch": 13,
+      "train_loss": 0.02959,
+      "val_loss": 0.01045,
+      "train_acc": 99.822,
+      "val_acc": 99.824
+    },
+    {
+      "epoch": 14,
+      "train_loss": 0.02248,
+      "val_loss": 0.00774,
+      "train_acc": 99.857,
+      "val_acc": 99.824
+    },
+    {
+      "epoch": 15,
+      "train_loss": 0.08518,
+      "val_loss": 0.05447,
+      "train_acc": 98.217,
+      "val_acc": 96.306
+    },
+    {
+      "epoch": 16,
+      "train_loss": 0.05054,
+      "val_loss": 0.01505,
+      "train_acc": 99.429,
+      "val_acc": 99.56
+    },
+    {
+      "epoch": 17,
+      "train_loss": 0.04782,
+      "val_loss": 0.02981,
+      "train_acc": 99.429,
+      "val_acc": 99.824
+    },
+    {
+      "epoch": 18,
+      "train_loss": 0.0264,
+      "val_loss": 0.01939,
+      "train_acc": 99.679,
+      "val_acc": 99.736
+    },
+    {
+      "epoch": 19,
+      "train_loss": 0.04716,
+      "val_loss": 0.06895,
+      "train_acc": 99.608,
+      "val_acc": 99.296
+    },
+    {
+      "epoch": 20,
+      "train_loss": 0.0359,
+      "val_loss": 0.02421,
+      "train_acc": 99.608,
+      "val_acc": 99.736
+    }
+  ],
+  "note": "Gerçek BCCD VOC etiketlerinden kırpılmış hücreler ile eğitilmiş SmallCellCNN. ImageSets train/val/test bölünmesi kullanıldı."
+}
